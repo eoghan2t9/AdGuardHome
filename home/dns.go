@@ -11,7 +11,6 @@ import (
 	"github.com/AdguardTeam/AdGuardHome/stats"
 	"github.com/AdguardTeam/AdGuardHome/util"
 	"github.com/AdguardTeam/dnsproxy/proxy"
-	"github.com/AdguardTeam/dnsproxy/upstream"
 	"github.com/AdguardTeam/golibs/log"
 	"github.com/joomcode/errorx"
 )
@@ -41,6 +40,7 @@ func initDNSServer() error {
 	}
 	conf := querylog.Config{
 		Enabled:           config.DNS.QueryLogEnabled,
+		FileEnabled:       config.DNS.QueryLogFileEnabled,
 		BaseDir:           baseDir,
 		Interval:          config.DNS.QueryLogInterval,
 		MemSize:           config.DNS.QueryLogMemSize,
@@ -61,7 +61,13 @@ func initDNSServer() error {
 	filterConf.HTTPRegister = httpRegister
 	Context.dnsFilter = dnsfilter.New(&filterConf, nil)
 
-	Context.dnsServer = dnsforward.NewServer(Context.dnsFilter, Context.stats, Context.queryLog)
+	p := dnsforward.DNSCreateParams{
+		DNSFilter:  Context.dnsFilter,
+		Stats:      Context.stats,
+		QueryLog:   Context.queryLog,
+		DHCPServer: Context.dhcpServer,
+	}
+	Context.dnsServer = dnsforward.NewServer(p)
 	dnsConfig := generateServerConfig()
 	err = Context.dnsServer.Prepare(&dnsConfig)
 	if err != nil {
@@ -176,7 +182,7 @@ func generateServerConfig() dnsforward.ServerConfig {
 	newconfig.TLSAllowUnencryptedDOH = tlsConf.AllowUnencryptedDOH
 
 	newconfig.FilterHandler = applyAdditionalFiltering
-	newconfig.GetUpstreamsByClient = getUpstreamsByClient
+	newconfig.GetCustomUpstreamByClient = Context.clients.FindUpstreams
 	return newconfig
 }
 
@@ -222,10 +228,6 @@ func getDNSAddresses() []string {
 	return dnsAddresses
 }
 
-func getUpstreamsByClient(clientAddr string) []upstream.Upstream {
-	return Context.clients.FindUpstreams(clientAddr)
-}
-
 // If a client has his own settings, apply them
 func applyAdditionalFiltering(clientAddr string, setts *dnsfilter.RequestFilteringSettings) {
 	Context.dnsFilter.ApplyBlockedServices(setts, nil, true)
@@ -233,6 +235,7 @@ func applyAdditionalFiltering(clientAddr string, setts *dnsfilter.RequestFilteri
 	if len(clientAddr) == 0 {
 		return
 	}
+	setts.ClientIP = clientAddr
 
 	c, ok := Context.clients.Find(clientAddr)
 	if !ok {
@@ -245,6 +248,7 @@ func applyAdditionalFiltering(clientAddr string, setts *dnsfilter.RequestFilteri
 		Context.dnsFilter.ApplyBlockedServices(setts, c.BlockedServices, false)
 	}
 
+	setts.ClientName = c.Name
 	setts.ClientTags = c.Tags
 
 	if !c.UseOwnSettings {
